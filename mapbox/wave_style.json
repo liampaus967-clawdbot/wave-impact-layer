@@ -1,0 +1,149 @@
+{
+  "comment": "Mapbox GL style for wave impact visualization",
+  "layers": [
+    {
+      "id": "wave-intensity-calm",
+      "comment": "Calm water - no visualization needed, or subtle blue",
+      "type": "circle",
+      "source": "wave-intensity",
+      "filter": ["==", ["get", "intensity"], "calm"],
+      "paint": {
+        "circle-radius": 3,
+        "circle-color": "transparent",
+        "circle-opacity": 0
+      }
+    },
+    {
+      "id": "wave-intensity-light",
+      "type": "circle",
+      "source": "wave-intensity",
+      "filter": ["==", ["get", "intensity"], "light"],
+      "paint": {
+        "circle-radius": 4,
+        "circle-color": "#8B7355",
+        "circle-opacity": 0.6
+      }
+    },
+    {
+      "id": "wave-intensity-moderate",
+      "type": "circle",
+      "source": "wave-intensity",
+      "filter": ["==", ["get", "intensity"], "moderate"],
+      "paint": {
+        "circle-radius": 5,
+        "circle-color": "#FF8C00",
+        "circle-opacity": 0.7
+      }
+    },
+    {
+      "id": "wave-intensity-rough",
+      "type": "circle",
+      "source": "wave-intensity",
+      "filter": ["==", ["get", "intensity"], "rough"],
+      "paint": {
+        "circle-radius": 6,
+        "circle-color": "#FF4500",
+        "circle-opacity": 0.8
+      }
+    },
+    {
+      "id": "wave-intensity-very-rough",
+      "type": "circle",
+      "source": "wave-intensity",
+      "filter": ["==", ["get", "intensity"], "very_rough"],
+      "paint": {
+        "circle-radius": 7,
+        "circle-color": "#DC143C",
+        "circle-opacity": 0.9
+      }
+    },
+    {
+      "id": "bank-impact-calm",
+      "type": "line",
+      "source": "bank-impact",
+      "filter": ["==", ["get", "intensity"], "calm"],
+      "paint": {
+        "line-width": 2,
+        "line-color": "#4A90A4",
+        "line-opacity": 0.3
+      }
+    },
+    {
+      "id": "bank-impact-light",
+      "type": "line",
+      "source": "bank-impact",
+      "filter": ["==", ["get", "intensity"], "light"],
+      "paint": {
+        "line-width": 3,
+        "line-color": "#8B7355",
+        "line-opacity": 0.7
+      }
+    },
+    {
+      "id": "bank-impact-moderate",
+      "type": "line",
+      "source": "bank-impact",
+      "filter": ["==", ["get", "intensity"], "moderate"],
+      "paint": {
+        "line-width": 4,
+        "line-color": "#FF8C00",
+        "line-opacity": 0.8
+      }
+    },
+    {
+      "id": "bank-impact-rough",
+      "type": "line",
+      "source": "bank-impact",
+      "filter": ["==", ["get", "intensity"], "rough"],
+      "paint": {
+        "line-width": 5,
+        "line-color": "#FF4500",
+        "line-opacity": 0.9
+      }
+    },
+    {
+      "id": "bank-impact-very-rough",
+      "type": "line",
+      "source": "bank-impact",
+      "filter": ["==", ["get", "intensity"], "very_rough"],
+      "paint": {
+        "line-width": 6,
+        "line-color": "#DC143C",
+        "line-opacity": 1.0
+      }
+    },
+    {
+      "id": "calm-zones",
+      "type": "circle",
+      "source": "calm-zones",
+      "paint": {
+        "circle-radius": 6,
+        "circle-color": "#32CD32",
+        "circle-opacity": 0.6,
+        "circle-stroke-width": 1,
+        "circle-stroke-color": "#228B22"
+      }
+    }
+  ],
+  "sources": {
+    "wave-intensity": {
+      "type": "geojson",
+      "data": "wave_intensity.geojson"
+    },
+    "bank-impact": {
+      "type": "geojson",
+      "data": "bank_impact.geojson"
+    },
+    "calm-zones": {
+      "type": "geojson",
+      "data": "calm_zones.geojson"
+    }
+  },
+  "color_scale": {
+    "calm": "#4A90A4",
+    "light": "#8B7355",
+    "moderate": "#FF8C00",
+    "rough": "#FF4500",
+    "very_rough": "#DC143C"
+  }
+}

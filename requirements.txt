@@ -1,0 +1,23 @@
+# Core dependencies
+numpy>=1.24.0
+scipy>=1.10.0
+pandas>=2.0.0
+
+# Geospatial
+geopandas>=0.13.0
+shapely>=2.0.0
+rasterio>=1.3.0
+pyproj>=3.5.0
+fiona>=1.9.0
+
+# HRRR data via Herbie
+herbie-data>=2024.1.0
+xarray>=2023.1.0
+netCDF4>=1.6.0
+cfgrib>=0.9.10
+
+# Visualization (optional)
+matplotlib>=3.7.0
+
+# CLI
+click>=8.1.0
