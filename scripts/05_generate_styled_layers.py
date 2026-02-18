@@ -28,11 +28,12 @@ logger = logging.getLogger(__name__)
 def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path, 
                             wind_speed_ms: float, wind_direction: float,
                             output_path: Path, line_spacing: float = 800.0,
-                            wave_amplitude: float = 150.0, wave_frequency: float = 0.002):
+                            wave_amplitude: float = 150.0, wave_frequency: float = 0.002,
+                            segment_length: float = 300.0):
     """
     Generate horizontal wavy polylines across the lake surface.
     
-    Lines are colored by wave intensity at each segment.
+    Lines are SPLIT INTO SEGMENTS, each colored by local fetch/intensity.
     
     Args:
         lake_polygon_path: Path to lake polygon GeoJSON
@@ -43,8 +44,9 @@ def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path,
         line_spacing: Vertical spacing between lines in meters
         wave_amplitude: Height of wave oscillation in meters
         wave_frequency: Frequency of wave oscillation (radians per meter)
+        segment_length: Length of each line segment in meters (for varying intensity)
     """
-    logger.info("Generating wave polylines...")
+    logger.info("Generating wave polylines (segmented)...")
     
     # Load lake polygon
     lake = gpd.read_file(lake_polygon_path)
@@ -71,15 +73,45 @@ def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path,
         fetch_data = src.read(1)
         fetch_transform = src.transform
     
-    lines = []
+    def get_fetch_at_point(x, y):
+        """Get fetch value at a point."""
+        try:
+            row, col = rasterio.transform.rowcol(fetch_transform, x, y)
+            if 0 <= row < fetch_data.shape[0] and 0 <= col < fetch_data.shape[1]:
+                return fetch_data[row, col]
+        except Exception:
+            pass
+        return 0
+    
+    def calc_wave_height(fetch_m):
+        """Calculate wave height from fetch."""
+        if fetch_m > 0 and wind_speed_ms > 0:
+            fetch_km = fetch_m / 1000.0
+            return 0.0016 * (wind_speed_ms ** 2) * np.sqrt(fetch_km)
+        return 0
+    
+    def classify_intensity(wave_height):
+        """Classify wave height into intensity category."""
+        if wave_height < 0.05:
+            return 'calm'
+        elif wave_height < 0.15:
+            return 'light'
+        elif wave_height < 0.30:
+            return 'moderate'
+        elif wave_height < 0.50:
+            return 'rough'
+        else:
+            return 'very_rough'
+    
+    segments = []
+    line_id = 0
     
     # Generate horizontal wavy lines from south to north
     y = miny + line_spacing
-    line_id = 0
     
     while y < maxy:
-        # Create base horizontal line
-        x_points = np.arange(minx - wave_amplitude, maxx + wave_amplitude, 50)  # 50m resolution
+        # Create base horizontal line with fine resolution
+        x_points = np.arange(minx - wave_amplitude, maxx + wave_amplitude, 30)  # 30m resolution
         
         # Add wave oscillation
         y_points = y + wave_amplitude * np.sin(wave_frequency * x_points)
@@ -114,67 +146,103 @@ def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path,
             continue
         
         for part in line_parts:
-            if part.length < 100:  # Skip tiny segments
+            if part.length < 50:  # Skip tiny segments
                 continue
             
-            # Sample fetch along line to get average intensity
-            mid_point = part.interpolate(0.5, normalized=True)
+            # Split this line part into segments
+            total_length = part.length
+            num_segments = max(1, int(total_length / segment_length))
             
-            # Get fetch value at midpoint
-            try:
-                row, col = rasterio.transform.rowcol(fetch_transform, mid_point.x, mid_point.y)
-                if 0 <= row < fetch_data.shape[0] and 0 <= col < fetch_data.shape[1]:
-                    fetch_m = fetch_data[row, col]
+            for i in range(num_segments):
+                start_frac = i / num_segments
+                end_frac = (i + 1) / num_segments
+                
+                # Get segment endpoints
+                start_pt = part.interpolate(start_frac, normalized=True)
+                end_pt = part.interpolate(end_frac, normalized=True)
+                mid_pt = part.interpolate((start_frac + end_frac) / 2, normalized=True)
+                
+                # Extract the actual segment geometry
+                # For accuracy, we need to cut the line at these distances
+                start_dist = start_frac * total_length
+                end_dist = end_frac * total_length
+                
+                # Get coordinates along segment
+                seg_coords = []
+                coords_list = list(part.coords)
+                cumulative_dist = 0
+                
+                for j in range(len(coords_list) - 1):
+                    p1 = coords_list[j]
+                    p2 = coords_list[j + 1]
+                    seg_dist = np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+                    
+                    # Check if this segment overlaps with our target range
+                    seg_start = cumulative_dist
+                    seg_end = cumulative_dist + seg_dist
+                    
+                    if seg_end >= start_dist and seg_start <= end_dist:
+                        # This segment is within our range
+                        if seg_start >= start_dist and seg_end <= end_dist:
+                            # Entire segment is within range
+                            if not seg_coords:
+                                seg_coords.append(p1)
+                            seg_coords.append(p2)
+                        elif seg_start < start_dist and seg_end > start_dist:
+                            # Segment starts before range, crosses start
+                            t = (start_dist - seg_start) / seg_dist
+                            interp_pt = (p1[0] + t * (p2[0] - p1[0]), p1[1] + t * (p2[1] - p1[1]))
+                            seg_coords.append(interp_pt)
+                            if seg_end <= end_dist:
+                                seg_coords.append(p2)
+                        elif seg_start < end_dist and seg_end > end_dist:
+                            # Segment crosses end
+                            if not seg_coords:
+                                seg_coords.append(p1)
+                            t = (end_dist - seg_start) / seg_dist
+                            interp_pt = (p1[0] + t * (p2[0] - p1[0]), p1[1] + t * (p2[1] - p1[1]))
+                            seg_coords.append(interp_pt)
+                    
+                    cumulative_dist = seg_end
+                
+                if len(seg_coords) >= 2:
+                    segment_geom = LineString(seg_coords)
                 else:
-                    fetch_m = 0
-            except Exception:
-                fetch_m = 0
-            
-            # Calculate wave height
-            if fetch_m > 0 and wind_speed_ms > 0:
-                fetch_km = fetch_m / 1000.0
-                wave_height = 0.0016 * (wind_speed_ms ** 2) * np.sqrt(fetch_km)
-            else:
-                wave_height = 0
-            
-            # Classify intensity
-            if wave_height < 0.05:
-                intensity = 'calm'
-            elif wave_height < 0.15:
-                intensity = 'light'
-            elif wave_height < 0.30:
-                intensity = 'moderate'
-            elif wave_height < 0.50:
-                intensity = 'rough'
-            else:
-                intensity = 'very_rough'
-            
-            lines.append({
-                'geometry': part,
-                'line_id': line_id,
-                'wave_height_m': float(wave_height),
-                'intensity': intensity,
-                'fetch_m': float(fetch_m)
-            })
+                    # Fallback: create simple line from start to end
+                    segment_geom = LineString([(start_pt.x, start_pt.y), (end_pt.x, end_pt.y)])
+                
+                # Get fetch at segment midpoint
+                fetch_m = get_fetch_at_point(mid_pt.x, mid_pt.y)
+                wave_height = calc_wave_height(fetch_m)
+                intensity = classify_intensity(wave_height)
+                
+                segments.append({
+                    'geometry': segment_geom,
+                    'line_id': line_id,
+                    'segment_id': i,
+                    'wave_height_m': float(wave_height),
+                    'intensity': intensity,
+                    'fetch_m': float(fetch_m)
+                })
             
             line_id += 1
         
         y += line_spacing
     
     # Create GeoDataFrame
-    gdf = gpd.GeoDataFrame(lines, crs='EPSG:32618')
+    gdf = gpd.GeoDataFrame(segments, crs='EPSG:32618')
     
     # Reproject to WGS84
     gdf = gdf.to_crs('EPSG:4326')
     
     # Save
     gdf.to_file(output_path, driver='GeoJSON')
-    logger.info(f"Saved {len(gdf)} wave polylines to {output_path}")
+    logger.info(f"Saved {len(gdf)} wave polyline segments to {output_path}")
     
     # Stats
     for intensity in ['calm', 'light', 'moderate', 'rough', 'very_rough']:
         count = len(gdf[gdf['intensity'] == intensity])
-        logger.info(f"  {intensity}: {count} lines")
+        logger.info(f"  {intensity}: {count} segments")
     
     return gdf
 
@@ -370,6 +438,8 @@ def main():
                         help='Spacing between wave lines in meters')
     parser.add_argument('--point-spacing', type=float, default=100.0,
                         help='Spacing between bank impact points in meters')
+    parser.add_argument('--segment-length', type=float, default=300.0,
+                        help='Length of wave line segments in meters (for varying intensity)')
     
     args = parser.parse_args()
     
@@ -400,7 +470,8 @@ def main():
     generate_wave_polylines(
         lake_polygon_path, fetch_dir,
         args.wind_speed, args.wind_dir,
-        wave_lines_path, args.line_spacing
+        wave_lines_path, args.line_spacing,
+        segment_length=args.segment_length
     )
     
     # Generate bank impact points
