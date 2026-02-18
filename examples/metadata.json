@@ -1,23 +1,12 @@
 {
   "lake": "champlain",
-  "wind_speed_ms": 15.169978514660013,
-  "wind_direction_deg": 1.5480113379988438,
-  "grid_spacing_m": 500.0,
-  "generated_at": "2026-02-18T18:56:49.764702",
+  "wind_speed_ms": 15.0,
+  "wind_direction_deg": 2.0,
+  "grid_spacing_m": 300.0,
+  "generated_at": "2026-02-18T19:06:24.356236",
   "outputs": {
-    "wave_intensity": "data/output_live/wave_intensity.geojson",
-    "bank_impact": "data/output_live/bank_impact.geojson",
-    "calm_zones": "data/output_live/calm_zones.geojson"
-  },
-  "hrrr": {
-    "initialization_time": "2026-02-18 15:00 UTC",
-    "forecast_hour": 0,
-    "valid_time": "2026-02-18 15:00 UTC",
-    "u_wind_ms": -0.40981101989746094,
-    "v_wind_ms": -15.16444206237793,
-    "wind_speed_ms": 15.169978514660013,
-    "wind_speed_mph": 33.93524193729445,
-    "wind_direction_deg": 1.5480113379988438,
-    "wind_direction_name": "N"
+    "wave_intensity": "data/output/wave_intensity.geojson",
+    "bank_impact": "data/output/bank_impact.geojson",
+    "calm_zones": "data/output/calm_zones.geojson"
   }
 }
