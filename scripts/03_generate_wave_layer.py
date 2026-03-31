@@ -11,16 +11,24 @@ Output: GeoJSON files ready for Mapbox styling
 """
 
 import argparse
-import logging
-from pathlib import Path
-import numpy as np
 import json
+import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import proj_fix  # noqa: E402,F401 — must run before geo imports
+
+import numpy as np
 import geopandas as gpd
+import pandas as pd
 import rasterio
 from rasterio.features import shapes
 from shapely.geometry import shape, Point, LineString, Polygon, MultiPolygon
 from shapely.ops import unary_union
-import pandas as pd
+
+from lib.lake_config import load_lake_config
+from lib.paths import LakePaths
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -208,9 +216,10 @@ def generate_wave_grid(fetch_dir: Path, wind_speed_ms: float, wind_direction: fl
     return gdf
 
 
-def generate_bank_impact(lake_polygon_path: Path, wind_speed_ms: float, 
+def generate_bank_impact(lake_polygon_path: Path, wind_speed_ms: float,
                          wind_direction: float, fetch_dir: Path,
-                         output_path: Path, segment_length: float = 200.0):
+                         output_path: Path, segment_length: float = 200.0,
+                         utm_crs: str = None):
     """
     Generate shoreline impact segments.
     
@@ -226,9 +235,19 @@ def generate_bank_impact(lake_polygon_path: Path, wind_speed_ms: float,
     
     # Load lake polygon
     lake = gpd.read_file(lake_polygon_path)
-    
+
+    # Determine UTM CRS: use provided, or read from fetch rasters
+    if utm_crs is None:
+        index_path = fetch_dir / "fetch_index.json"
+        if index_path.exists():
+            with open(index_path) as f:
+                fetch_index = json.load(f)
+            utm_crs = fetch_index.get('crs', 'EPSG:32618')
+        else:
+            utm_crs = 'EPSG:32618'
+
     # Reproject to UTM for accurate geometry operations
-    lake_utm = lake.to_crs('EPSG:32618')
+    lake_utm = lake.to_crs(utm_crs)
     
     # Get the exterior boundary
     boundary = lake_utm.geometry.iloc[0]
@@ -320,7 +339,7 @@ def generate_bank_impact(lake_polygon_path: Path, wind_speed_ms: float,
                 })
     
     # Create GeoDataFrame
-    gdf = gpd.GeoDataFrame(segments, crs='EPSG:32618')
+    gdf = gpd.GeoDataFrame(segments, crs=utm_crs)
     
     # Reproject to WGS84
     gdf = gdf.to_crs('EPSG:4326')
@@ -372,23 +391,19 @@ def main():
                         help='Wind speed in m/s')
     parser.add_argument('--wind-dir', type=float, required=True,
                         help='Wind direction in degrees (direction wind comes FROM)')
-    parser.add_argument('--lakes-dir', type=Path, default=Path('data/lakes'),
-                        help='Directory with lake data')
-    parser.add_argument('--fetch-dir', type=Path, default=Path('data/fetch_rasters'),
-                        help='Directory with fetch rasters')
-    parser.add_argument('--output-dir', type=Path, default=Path('data/output'),
-                        help='Output directory')
+    parser.add_argument('--output-dir', type=Path, default=None,
+                        help='Output directory (default: auto-detect)')
     parser.add_argument('--grid-spacing', type=float, default=500.0,
                         help='Grid point spacing in meters')
-    
+
     args = parser.parse_args()
-    
-    # Create output directory
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Paths
-    lake_polygon_path = args.lakes_dir / f"{args.lake}_polygon.geojson"
-    fetch_dir = args.fetch_dir / args.lake
+
+    # Auto-detect paths from project root
+    paths = LakePaths(args.lake)
+    lake_polygon_path = paths.polygon
+    fetch_dir = paths.fetch_dir
+    output_dir = args.output_dir if args.output_dir else paths.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     # Check inputs exist
     if not lake_polygon_path.exists():
@@ -402,28 +417,28 @@ def main():
     
     logger.info(f"Generating wave impact for {args.lake}")
     logger.info(f"Wind: {args.wind_speed} m/s from {args.wind_dir}°")
-    
+
     # Load lake polygon
     lake = gpd.read_file(lake_polygon_path)
-    
+
     # Generate wave grid
-    wave_grid_path = args.output_dir / "wave_intensity.geojson"
+    wave_grid_path = output_dir / "wave_intensity.geojson"
     wave_grid = generate_wave_grid(
         fetch_dir, args.wind_speed, args.wind_dir,
         lake, wave_grid_path, args.grid_spacing
     )
-    
+
     # Generate bank impact
-    bank_impact_path = args.output_dir / "bank_impact.geojson"
+    bank_impact_path = output_dir / "bank_impact.geojson"
     generate_bank_impact(
         lake_polygon_path, args.wind_speed, args.wind_dir,
         fetch_dir, bank_impact_path
     )
-    
+
     # Generate calm zones
-    calm_zones_path = args.output_dir / "calm_zones.geojson"
+    calm_zones_path = output_dir / "calm_zones.geojson"
     generate_calm_zones(wave_grid, calm_zones_path)
-    
+
     # Save metadata
     metadata = {
         'lake': args.lake,
@@ -437,13 +452,13 @@ def main():
             'calm_zones': str(calm_zones_path)
         }
     }
-    
-    metadata_path = args.output_dir / "metadata.json"
+
+    metadata_path = output_dir / "metadata.json"
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     
     logger.info("Wave impact layer generation complete!")
-    logger.info(f"Output directory: {args.output_dir}")
+    logger.info(f"Output directory: {output_dir}")
 
 
 if __name__ == '__main__':

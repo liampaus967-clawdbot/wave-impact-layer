@@ -9,12 +9,19 @@ Output: Fetch rasters for each direction, stored as GeoTIFFs.
 """
 
 import argparse
+import json
 import logging
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import proj_fix  # noqa: E402,F401 — must run before geo imports
+
 import numpy as np
 import rasterio
 from scipy import ndimage
-import json
+
+from lib.paths import LakePaths
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -308,27 +315,30 @@ def main():
                         help='Comma-separated list of directions (default: 16 compass points)')
     
     args = parser.parse_args()
-    
+
     # Parse directions
     if args.directions:
         directions = [float(d) for d in args.directions.split(',')]
     else:
         directions = DIRECTIONS
-    
-    # Input raster path
-    raster_path = args.input_dir / f"{args.lake}_raster.tif"
-    
+
+    # Auto-detect paths from project root
+    paths = LakePaths(args.lake)
+    raster_path = paths.raster
+    if not raster_path.exists():
+        # Fallback to legacy path
+        raster_path = args.input_dir / f"{args.lake}_raster.tif"
+
     if not raster_path.exists():
         logger.error(f"Lake raster not found: {raster_path}")
         logger.error("Run 01_prepare_lake.py first")
         return
-    
-    # Output directory
-    output_dir = args.output_dir / args.lake
-    
+
+    output_dir = paths.fetch_dir
+
     # Calculate fetch
     output_paths = calculate_all_fetch_directions(raster_path, output_dir, directions)
-    
+
     logger.info(f"Fetch calculation complete!")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Calculated {len(output_paths)} direction rasters")

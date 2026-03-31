@@ -1,0 +1,17 @@
+{
+  "total": 2,
+  "success": 0,
+  "failed": 2,
+  "results": [
+    {
+      "lake_id": "lake-memphremagog",
+      "status": "failed",
+      "step": "wave_layer"
+    },
+    {
+      "lake_id": "lake-champlain",
+      "status": "failed",
+      "step": "wave_layer"
+    }
+  ]
+}

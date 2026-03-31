@@ -9,53 +9,36 @@ Output: micro_shelters.geojson with labeled shelter polygons
 """
 
 import argparse
-import logging
-from pathlib import Path
-import numpy as np
 import json
+import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import proj_fix  # noqa: E402,F401 — must run before geo imports
+
+import numpy as np
 import geopandas as gpd
+import pandas as pd
 import rasterio
 from rasterio.features import shapes
+from scipy import ndimage
 from shapely.geometry import Point, Polygon, MultiPolygon, shape, mapping
 from shapely.ops import unary_union
-from scipy import ndimage
-import pandas as pd
+
+from lib.paths import LakePaths
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Known bay/cove names for Lake Champlain (can expand)
-KNOWN_BAYS = {
-    'champlain': [
-        {'name': 'Malletts Bay', 'center': (-73.17, 44.53), 'radius': 3000},
-        {'name': 'Shelburne Bay', 'center': (-73.22, 44.40), 'radius': 2000},
-        {'name': 'Burlington Bay', 'center': (-73.23, 44.48), 'radius': 1500},
-        {'name': 'St. Albans Bay', 'center': (-73.15, 44.80), 'radius': 2500},
-        {'name': 'Missisquoi Bay', 'center': (-73.10, 44.97), 'radius': 4000},
-        {'name': 'Cumberland Bay', 'center': (-73.43, 44.68), 'radius': 2000},
-        {'name': 'Willsboro Bay', 'center': (-73.38, 44.38), 'radius': 2000},
-        {'name': 'Port Henry Bay', 'center': (-73.44, 44.05), 'radius': 1500},
-        {'name': 'Bulwagga Bay', 'center': (-73.42, 44.02), 'radius': 1500},
-        {'name': 'Crown Point Bay', 'center': (-73.43, 43.94), 'radius': 1500},
-        {'name': 'Ticonderoga Bay', 'center': (-73.42, 43.85), 'radius': 1500},
-        {'name': 'South Bay', 'center': (-73.38, 43.60), 'radius': 2000},
-        {'name': 'East Bay', 'center': (-73.32, 43.58), 'radius': 1500},
-        {'name': 'Northwest Bay', 'center': (-73.40, 43.65), 'radius': 2000},
-        {'name': 'Button Bay', 'center': (-73.37, 44.18), 'radius': 1000},
-        {'name': 'Converse Bay', 'center': (-73.28, 44.33), 'radius': 1500},
-        {'name': 'Thompsons Point', 'center': (-73.30, 44.26), 'radius': 1000},
-        {'name': 'McNeil Cove', 'center': (-73.24, 44.46), 'radius': 800},
-        {'name': 'Appletree Bay', 'center': (-73.21, 44.47), 'radius': 800},
-        {'name': 'Perkins Pier', 'center': (-73.22, 44.48), 'radius': 500},
-        {'name': 'Oakledge Cove', 'center': (-73.23, 44.45), 'radius': 600},
-        {'name': 'Red Rocks', 'center': (-73.24, 44.43), 'radius': 800},
-        {'name': 'Sunset Cliff', 'center': (-73.25, 44.42), 'radius': 600},
-        {'name': 'Kingsland Bay', 'center': (-73.26, 44.22), 'radius': 1200},
-        {'name': 'Basin Harbor', 'center': (-73.35, 44.17), 'radius': 800},
-        {'name': 'Dead Creek', 'center': (-73.34, 44.10), 'radius': 1000},
-        {'name': 'Otter Creek', 'center': (-73.30, 44.07), 'radius': 1000},
-    ]
-}
+
+def _load_known_bays(lake_id: str) -> list:
+    """Load known bays from data/lakes/{lake_id}/bays.json if it exists."""
+    paths = LakePaths(lake_id)
+    if paths.bays.exists():
+        with open(paths.bays) as f:
+            return json.load(f)
+    return []
 
 
 def detect_micro_shelters(lake_polygon_path: Path, fetch_dir: Path,
@@ -79,7 +62,16 @@ def detect_micro_shelters(lake_polygon_path: Path, fetch_dir: Path,
     
     # Load lake polygon
     lake = gpd.read_file(lake_polygon_path)
-    lake_utm = lake.to_crs('EPSG:32618')
+
+    # Determine UTM CRS from fetch rasters
+    index_path = fetch_dir / "fetch_index.json"
+    if index_path.exists():
+        with open(index_path) as _f:
+            utm_crs = json.load(_f).get('crs', 'EPSG:32618')
+    else:
+        utm_crs = 'EPSG:32618'
+
+    lake_utm = lake.to_crs(utm_crs)
     lake_geom = lake_utm.geometry.iloc[0]
     
     # Load fetch raster for wind direction
@@ -165,12 +157,11 @@ def detect_micro_shelters(lake_polygon_path: Path, fetch_dir: Path,
     else:
         gdf = gpd.GeoDataFrame({'geometry': []}, crs=fetch_crs)
     
-    # Name shelters based on known bays
-    if lake_name in KNOWN_BAYS and len(gdf) > 0:
+    # Name shelters based on known bays (loaded from data file)
+    known_bays = _load_known_bays(lake_name)
+    if known_bays and len(gdf) > 0:
         gdf['name'] = None
         gdf['is_named'] = False
-        
-        known_bays = KNOWN_BAYS[lake_name]
         
         for idx, row in gdf.iterrows():
             centroid_wgs84 = gpd.GeoSeries([Point(row['centroid_x'], row['centroid_y'])], 
@@ -197,7 +188,11 @@ def detect_micro_shelters(lake_polygon_path: Path, fetch_dir: Path,
                 # Generate generic name based on location
                 gdf.at[idx, 'name'] = f"Shelter Zone {idx + 1}"
                 gdf.at[idx, 'is_named'] = False
-    
+    elif len(gdf) > 0:
+        # No known bays — use generic names for all shelters
+        gdf['name'] = [f"Shelter Zone {i + 1}" for i in range(len(gdf))]
+        gdf['is_named'] = False
+
     # Add protection level based on fetch
     if len(gdf) > 0:
         gdf['protection'] = gdf['avg_fetch_m'].apply(
@@ -267,33 +262,31 @@ def main():
                         help='Lake name')
     parser.add_argument('--wind-dir', type=float, required=True,
                         help='Wind direction in degrees (FROM)')
-    parser.add_argument('--lakes-dir', type=Path, default=Path('data/lakes'),
-                        help='Directory with lake data')
-    parser.add_argument('--fetch-dir', type=Path, default=Path('data/fetch_rasters'),
-                        help='Directory with fetch rasters')
-    parser.add_argument('--output-dir', type=Path, default=Path('data/output'),
-                        help='Output directory')
+    parser.add_argument('--output-dir', type=Path, default=None,
+                        help='Output directory (default: auto-detect)')
     parser.add_argument('--fetch-threshold', type=float, default=2000.0,
                         help='Max fetch (m) to be considered sheltered')
     parser.add_argument('--min-area', type=float, default=50000.0,
                         help='Minimum shelter area in m²')
-    
+
     args = parser.parse_args()
-    
-    # Paths
-    lake_polygon_path = args.lakes_dir / f"{args.lake}_polygon.geojson"
-    fetch_dir = args.fetch_dir / args.lake
-    
+
+    # Auto-detect paths from project root
+    paths = LakePaths(args.lake)
+    lake_polygon_path = paths.polygon
+    fetch_dir = paths.fetch_dir
+    output_dir = args.output_dir if args.output_dir else paths.output_dir
+
     if not lake_polygon_path.exists():
         logger.error(f"Lake polygon not found: {lake_polygon_path}")
         return
-    
+
     if not fetch_dir.exists():
         logger.error(f"Fetch rasters not found: {fetch_dir}")
         return
-    
+
     # Detect shelters
-    shelters_path = args.output_dir / "micro_shelters.geojson"
+    shelters_path = output_dir / "micro_shelters.geojson"
     shelters = detect_micro_shelters(
         lake_polygon_path, fetch_dir,
         args.wind_dir, shelters_path,
@@ -303,7 +296,7 @@ def main():
     )
     
     # Generate labels
-    labels_path = args.output_dir / "shelter_labels.geojson"
+    labels_path = output_dir / "shelter_labels.geojson"
     generate_shelter_labels(shelters, labels_path)
     
     logger.info("Micro-shelter detection complete!")

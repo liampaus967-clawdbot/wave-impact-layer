@@ -11,25 +11,42 @@ These are ADDITIONAL outputs - original files are not modified.
 """
 
 import argparse
-import logging
-from pathlib import Path
-import numpy as np
 import json
+import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import proj_fix  # noqa: E402,F401 — must run before geo imports
+
+import numpy as np
 import geopandas as gpd
+import pandas as pd
 import rasterio
 from shapely.geometry import Point, LineString, MultiLineString
 from shapely.ops import unary_union
-import pandas as pd
+
+from lib.lake_config import load_lake_config
+from lib.paths import LakePaths
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path, 
+def _get_utm_crs_from_fetch(fetch_dir: Path) -> str:
+    """Read UTM CRS from fetch index, falling back to EPSG:32618."""
+    index_path = fetch_dir / "fetch_index.json"
+    if index_path.exists():
+        with open(index_path) as f:
+            return json.load(f).get('crs', 'EPSG:32618')
+    return 'EPSG:32618'
+
+
+def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path,
                             wind_speed_ms: float, wind_direction: float,
                             output_path: Path, line_spacing: float = 800.0,
                             wave_amplitude: float = 150.0, wave_frequency: float = 0.002,
-                            segment_length: float = 300.0):
+                            segment_length: float = 300.0, utm_crs: str = None):
     """
     Generate horizontal wavy polylines across the lake surface.
     
@@ -48,9 +65,12 @@ def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path,
     """
     logger.info("Generating wave polylines (segmented)...")
     
+    if utm_crs is None:
+        utm_crs = _get_utm_crs_from_fetch(fetch_dir)
+
     # Load lake polygon
     lake = gpd.read_file(lake_polygon_path)
-    lake_utm = lake.to_crs('EPSG:32618')
+    lake_utm = lake.to_crs(utm_crs)
     lake_geom = lake_utm.geometry.iloc[0]
     
     # Get bounds
@@ -230,11 +250,11 @@ def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path,
         y += line_spacing
     
     # Create GeoDataFrame
-    gdf = gpd.GeoDataFrame(segments, crs='EPSG:32618')
-    
+    gdf = gpd.GeoDataFrame(segments, crs=utm_crs)
+
     # Reproject to WGS84
     gdf = gdf.to_crs('EPSG:4326')
-    
+
     # Save
     gdf.to_file(output_path, driver='GeoJSON')
     logger.info(f"Saved {len(gdf)} wave polyline segments to {output_path}")
@@ -248,7 +268,7 @@ def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path,
 
 
 def generate_bank_impact_points(bank_impact_path: Path, output_path: Path,
-                                 point_spacing: float = 100.0):
+                                 point_spacing: float = 100.0, utm_crs: str = None):
     """
     Convert bank impact line segments to points along shoreline.
     
@@ -262,8 +282,11 @@ def generate_bank_impact_points(bank_impact_path: Path, output_path: Path,
     # Load bank impact segments
     gdf = gpd.read_file(bank_impact_path)
     
+    if utm_crs is None:
+        utm_crs = 'EPSG:32618'
+
     # Reproject to UTM for distance calculations
-    gdf_utm = gdf.to_crs('EPSG:32618')
+    gdf_utm = gdf.to_crs(utm_crs)
     
     points = []
     
@@ -303,7 +326,7 @@ def generate_bank_impact_points(bank_impact_path: Path, output_path: Path,
                 })
     
     # Create GeoDataFrame
-    gdf_points = gpd.GeoDataFrame(points, crs='EPSG:32618')
+    gdf_points = gpd.GeoDataFrame(points, crs=utm_crs)
     
     # Reproject to WGS84
     gdf_points = gdf_points.to_crs('EPSG:4326')
@@ -321,7 +344,8 @@ def generate_bank_impact_points(bank_impact_path: Path, output_path: Path,
 
 
 def generate_wind_indicator(lake_polygon_path: Path, wind_speed_ms: float,
-                            wind_direction: float, output_path: Path):
+                            wind_direction: float, output_path: Path,
+                            utm_crs: str = None):
     """
     Generate wind direction indicator arrow(s).
     
@@ -333,9 +357,12 @@ def generate_wind_indicator(lake_polygon_path: Path, wind_speed_ms: float,
     """
     logger.info("Generating wind indicator...")
     
+    if utm_crs is None:
+        utm_crs = 'EPSG:32618'
+
     # Load lake to get center
     lake = gpd.read_file(lake_polygon_path)
-    lake_utm = lake.to_crs('EPSG:32618')
+    lake_utm = lake.to_crs(utm_crs)
     
     centroid = lake_utm.geometry.iloc[0].centroid
     
@@ -409,7 +436,7 @@ def generate_wind_indicator(lake_polygon_path: Path, wind_speed_ms: float,
     ]
     
     # Create GeoDataFrame
-    gdf = gpd.GeoDataFrame(features, crs='EPSG:32618')
+    gdf = gpd.GeoDataFrame(features, crs=utm_crs)
     gdf = gdf.to_crs('EPSG:4326')
     
     # Save
@@ -428,62 +455,66 @@ def main():
                         help='Wind speed in m/s')
     parser.add_argument('--wind-dir', type=float, required=True,
                         help='Wind direction in degrees')
-    parser.add_argument('--lakes-dir', type=Path, default=Path('data/lakes'),
-                        help='Directory with lake data')
-    parser.add_argument('--fetch-dir', type=Path, default=Path('data/fetch_rasters'),
-                        help='Directory with fetch rasters')
-    parser.add_argument('--output-dir', type=Path, default=Path('data/output'),
-                        help='Output directory')
+    parser.add_argument('--output-dir', type=Path, default=None,
+                        help='Output directory (default: auto-detect)')
     parser.add_argument('--line-spacing', type=float, default=800.0,
                         help='Spacing between wave lines in meters')
     parser.add_argument('--point-spacing', type=float, default=100.0,
                         help='Spacing between bank impact points in meters')
     parser.add_argument('--segment-length', type=float, default=300.0,
                         help='Length of wave line segments in meters (for varying intensity)')
-    
+
     args = parser.parse_args()
-    
-    # Paths
-    lake_polygon_path = args.lakes_dir / f"{args.lake}_polygon.geojson"
-    fetch_dir = args.fetch_dir / args.lake
-    bank_impact_path = args.output_dir / "bank_impact.geojson"
-    
+
+    # Auto-detect paths from project root
+    paths = LakePaths(args.lake)
+    lake_polygon_path = paths.polygon
+    fetch_dir = paths.fetch_dir
+    output_dir = args.output_dir if args.output_dir else paths.output_dir
+    bank_impact_path = output_dir / "bank_impact.geojson"
+
     # Check inputs
     if not lake_polygon_path.exists():
         logger.error(f"Lake polygon not found: {lake_polygon_path}")
         return
-    
+
     if not fetch_dir.exists():
         logger.error(f"Fetch rasters not found: {fetch_dir}")
         return
-    
+
     if not bank_impact_path.exists():
         logger.error(f"Bank impact not found: {bank_impact_path}")
         logger.error("Run 03_generate_wave_layer.py first")
         return
-    
+
+    # Determine UTM CRS from fetch rasters
+    utm_crs = _get_utm_crs_from_fetch(fetch_dir)
+
     logger.info(f"Generating styled layers for {args.lake}")
     logger.info(f"Wind: {args.wind_speed} m/s from {args.wind_dir}°")
-    
+
     # Generate wave polylines
-    wave_lines_path = args.output_dir / "wave_polylines.geojson"
+    wave_lines_path = output_dir / "wave_polylines.geojson"
     generate_wave_polylines(
         lake_polygon_path, fetch_dir,
         args.wind_speed, args.wind_dir,
         wave_lines_path, args.line_spacing,
-        segment_length=args.segment_length
+        segment_length=args.segment_length,
+        utm_crs=utm_crs
     )
-    
+
     # Generate bank impact points
-    bank_points_path = args.output_dir / "bank_impact_points.geojson"
-    generate_bank_impact_points(bank_impact_path, bank_points_path, args.point_spacing)
-    
+    bank_points_path = output_dir / "bank_impact_points.geojson"
+    generate_bank_impact_points(bank_impact_path, bank_points_path, args.point_spacing,
+                                utm_crs=utm_crs)
+
     # Generate wind indicator
-    wind_path = args.output_dir / "wind_indicator.geojson"
-    generate_wind_indicator(lake_polygon_path, args.wind_speed, args.wind_dir, wind_path)
+    wind_path = output_dir / "wind_indicator.geojson"
+    generate_wind_indicator(lake_polygon_path, args.wind_speed, args.wind_dir, wind_path,
+                            utm_crs=utm_crs)
     
     logger.info("Styled layer generation complete!")
-    logger.info(f"New outputs in {args.output_dir}:")
+    logger.info(f"New outputs in {output_dir}:")
     logger.info(f"  - wave_polylines.geojson")
     logger.info(f"  - bank_impact_points.geojson")
     logger.info(f"  - wind_indicator.geojson")

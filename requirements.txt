@@ -19,5 +19,9 @@ cfgrib>=0.9.10
 # Visualization (optional)
 matplotlib>=3.7.0
 
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
 # CLI
 click>=8.1.0

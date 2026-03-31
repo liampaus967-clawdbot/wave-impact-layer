@@ -9,17 +9,16 @@ import argparse
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
+import sys
 import numpy as np
 import json
 import subprocess
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.lake_config import load_lake_config
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Lake center coordinates for HRRR extraction
-LAKE_CENTERS = {
-    'champlain': {'lat': 44.5, 'lon': -73.25}
-}
 
 
 def get_latest_hrrr_time() -> datetime:
@@ -116,11 +115,11 @@ def generate_wave_layer_from_hrrr(lake: str, date: datetime = None, fxx: int = 0
     if date is None:
         date = get_latest_hrrr_time()
     
-    # Get lake center
-    center = LAKE_CENTERS[lake]
-    
+    # Get lake center from config
+    config = load_lake_config(lake)
+
     # Fetch wind data
-    u_wind, v_wind = fetch_hrrr_wind(date, center['lat'], center['lon'], fxx)
+    u_wind, v_wind = fetch_hrrr_wind(date, config.lat, config.lon, fxx)
     
     # Calculate speed and direction
     wind_speed, wind_direction = calculate_wind_speed_direction(u_wind, v_wind)
@@ -137,8 +136,9 @@ def generate_wave_layer_from_hrrr(lake: str, date: datetime = None, fxx: int = 0
     logger.info(f"Wind: {wind_mph:.0f} mph from {dir_name}")
     
     # Call the wave layer generator
+    script_dir = Path(__file__).resolve().parent
     cmd = [
-        'python', 'scripts/03_generate_wave_layer.py',
+        sys.executable, str(script_dir / '03_generate_wave_layer.py'),
         '--lake', lake,
         '--wind-speed', str(wind_speed),
         '--wind-dir', str(wind_direction),
@@ -238,8 +238,7 @@ def generate_forecast_sequence(lake: str, date: datetime = None,
 def main():
     parser = argparse.ArgumentParser(description='Generate wave layer from HRRR')
     parser.add_argument('--lake', type=str, default='champlain',
-                        choices=list(LAKE_CENTERS.keys()),
-                        help='Lake name')
+                        help='Lake ID (must have config in data/lakes/{lake}/config.json)')
     parser.add_argument('--latest', action='store_true',
                         help='Use latest HRRR forecast')
     parser.add_argument('--date', type=str,
@@ -250,11 +249,17 @@ def main():
                         help='Forecast hour (0-48)')
     parser.add_argument('--forecast-sequence', action='store_true',
                         help='Generate sequence of forecast hours')
-    parser.add_argument('--output-dir', type=Path, default=Path('data/output'),
-                        help='Output directory')
-    
+    parser.add_argument('--output-dir', type=Path, default=None,
+                        help='Output directory (default: auto-detect)')
+
     args = parser.parse_args()
-    
+
+    # Auto-detect output dir if not provided
+    if args.output_dir is None:
+        from lib.paths import LakePaths
+        args.output_dir = LakePaths(args.lake).output_dir
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
     # Determine forecast time
     if args.latest:
         date = get_latest_hrrr_time()
@@ -262,9 +267,9 @@ def main():
         date = datetime.strptime(f"{args.date} {args.cycle or 0}", "%Y-%m-%d %H")
     else:
         date = get_latest_hrrr_time()
-    
+
     logger.info(f"Using HRRR forecast: {date.strftime('%Y-%m-%d %H:00 UTC')}")
-    
+
     if args.forecast_sequence:
         generate_forecast_sequence(args.lake, date, output_dir=args.output_dir)
     else:
