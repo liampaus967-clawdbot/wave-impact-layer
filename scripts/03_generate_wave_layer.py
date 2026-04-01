@@ -195,14 +195,20 @@ def generate_wave_grid(fetch_dir: Path, wind_speed_ms: float, wind_direction: fl
                 })
     
     # Create GeoDataFrame
-    gdf = gpd.GeoDataFrame(points, crs=crs)
-    
-    # Reproject to WGS84 for Mapbox
-    gdf = gdf.to_crs('EPSG:4326')
+    if not points:
+        logger.warning("No wave grid points generated — fetch rasters may be empty")
+        gdf = gpd.GeoDataFrame(columns=['geometry', 'wave_height_m', 'intensity',
+                                         'fetch_m', 'wind_speed_ms', 'wind_direction'],
+                                geometry='geometry', crs='EPSG:4326')
+    else:
+        gdf = gpd.GeoDataFrame(points, crs=crs)
+        # Reproject to WGS84 for Mapbox
+        gdf = gdf.to_crs('EPSG:4326')
     
     # Save to GeoJSON
-    gdf.to_file(output_path, driver='GeoJSON')
-    logger.info(f"Saved {len(gdf)} wave grid points to {output_path}")
+    if output_path is not None:
+        gdf.to_file(output_path, driver='GeoJSON')
+        logger.info(f"Saved {len(gdf)} wave grid points to {output_path}")
     
     # Log statistics
     for intensity in ['calm', 'light', 'moderate', 'rough', 'very_rough']:
@@ -421,11 +427,10 @@ def main():
     # Load lake polygon
     lake = gpd.read_file(lake_polygon_path)
 
-    # Generate wave grid
-    wave_grid_path = output_dir / "wave_intensity.geojson"
+    # Generate wave grid (used internally by styled layers)
     wave_grid = generate_wave_grid(
         fetch_dir, args.wind_speed, args.wind_dir,
-        lake, wave_grid_path, args.grid_spacing
+        lake, None, args.grid_spacing
     )
 
     # Generate bank impact
@@ -435,10 +440,6 @@ def main():
         fetch_dir, bank_impact_path
     )
 
-    # Generate calm zones
-    calm_zones_path = output_dir / "calm_zones.geojson"
-    generate_calm_zones(wave_grid, calm_zones_path)
-
     # Save metadata
     metadata = {
         'lake': args.lake,
@@ -447,9 +448,7 @@ def main():
         'grid_spacing_m': args.grid_spacing,
         'generated_at': pd.Timestamp.now().isoformat(),
         'outputs': {
-            'wave_intensity': str(wave_grid_path),
             'bank_impact': str(bank_impact_path),
-            'calm_zones': str(calm_zones_path)
         }
     }
 

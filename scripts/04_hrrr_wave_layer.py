@@ -207,7 +207,9 @@ def main():
 
     logger.info(f"Using HRRR analysis: {date.strftime('%Y-%m-%d %H:00 UTC')}")
 
-    generate_wave_layer_from_hrrr(args.lake, date, args.output_dir)
+    result = generate_wave_layer_from_hrrr(args.lake, date, args.output_dir)
+    if result is None:
+        sys.exit(1)
 
 
 if __name__ == '__main__':

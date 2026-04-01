@@ -9,16 +9,7 @@ ENV/
 .venv/
 
 # Data files (too large for git)
-data/lakes/*.tif
-data/fetch_rasters/
-data/output/
-*.grib2
-*.nc
-
-# Keep directory structure
-!data/lakes/.gitkeep
-!data/fetch_rasters/.gitkeep
-!data/output/.gitkeep
+data/
 
 # IDE
 .idea/

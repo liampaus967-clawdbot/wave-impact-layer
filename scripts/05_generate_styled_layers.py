@@ -125,44 +125,71 @@ def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path,
     
     segments = []
     line_id = 0
-    
-    # Generate horizontal wavy lines from south to north
-    y = miny + line_spacing
-    
-    while y < maxy:
-        # Create base horizontal line with fine resolution
-        x_points = np.arange(minx - wave_amplitude, maxx + wave_amplitude, 30)  # 30m resolution
-        
-        # Add wave oscillation
-        y_points = y + wave_amplitude * np.sin(wave_frequency * x_points)
-        
+
+    # Wave lines run perpendicular to the wind direction.
+    # wind_direction is meteorological (where wind comes FROM), so the wind
+    # blows toward (wind_direction + 180). Lines perpendicular to that are
+    # oriented at (wind_direction + 90) degrees from north.
+    line_angle_deg = (wind_direction + 90) % 360
+    line_angle_rad = np.radians(line_angle_deg)
+
+    # Unit vectors: along-line and cross-line (spacing direction)
+    # Geographic: angle measured clockwise from north (y-axis)
+    along_x = np.sin(line_angle_rad)   # along the line
+    along_y = np.cos(line_angle_rad)
+    cross_x = np.cos(line_angle_rad)   # perpendicular, used for spacing
+    cross_y = -np.sin(line_angle_rad)
+
+    # Project bounding box onto cross-line axis to find sweep range
+    cx, cy = (minx + maxx) / 2, (miny + maxy) / 2
+    corners = [(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy)]
+    cross_vals = [(px - cx) * cross_x + (py - cy) * cross_y for px, py in corners]
+    along_vals = [(px - cx) * along_x + (py - cy) * along_y for px, py in corners]
+    cross_min, cross_max = min(cross_vals), max(cross_vals)
+    along_min, along_max = min(along_vals), max(along_vals)
+
+    # Sweep lines across the lake perpendicular to wind
+    d = cross_min + line_spacing
+
+    while d < cross_max:
+        # Origin of this line on the cross-line axis
+        ox = cx + d * cross_x
+        oy = cy + d * cross_y
+
+        # Create base line with fine resolution along the line direction
+        t_points = np.arange(along_min - wave_amplitude, along_max + wave_amplitude, 30)
+
+        # Positions along line direction + wave oscillation in cross direction
+        x_points = ox + t_points * along_x + wave_amplitude * np.sin(wave_frequency * t_points) * cross_x
+        y_points = oy + t_points * along_y + wave_amplitude * np.sin(wave_frequency * t_points) * cross_y
+
         # Create line coordinates
         coords = list(zip(x_points, y_points))
         
         if len(coords) < 2:
-            y += line_spacing
+            d += line_spacing
             continue
-        
+
         line = LineString(coords)
-        
+
         # Clip to lake polygon
         try:
             clipped = line.intersection(lake_geom)
         except Exception:
-            y += line_spacing
+            d += line_spacing
             continue
-        
+
         if clipped.is_empty:
-            y += line_spacing
+            d += line_spacing
             continue
-        
+
         # Handle MultiLineString (line may be split by islands)
         if clipped.geom_type == 'MultiLineString':
             line_parts = list(clipped.geoms)
         elif clipped.geom_type == 'LineString':
             line_parts = [clipped]
         else:
-            y += line_spacing
+            d += line_spacing
             continue
         
         for part in line_parts:
@@ -247,8 +274,8 @@ def generate_wave_polylines(lake_polygon_path: Path, fetch_dir: Path,
             
             line_id += 1
         
-        y += line_spacing
-    
+        d += line_spacing
+
     # Create GeoDataFrame
     gdf = gpd.GeoDataFrame(segments, crs=utm_crs)
 
@@ -503,11 +530,6 @@ def main():
         utm_crs=utm_crs
     )
 
-    # Generate bank impact points
-    bank_points_path = output_dir / "bank_impact_points.geojson"
-    generate_bank_impact_points(bank_impact_path, bank_points_path, args.point_spacing,
-                                utm_crs=utm_crs)
-
     # Generate wind indicator
     wind_path = output_dir / "wind_indicator.geojson"
     generate_wind_indicator(lake_polygon_path, args.wind_speed, args.wind_dir, wind_path,
@@ -516,7 +538,6 @@ def main():
     logger.info("Styled layer generation complete!")
     logger.info(f"New outputs in {output_dir}:")
     logger.info(f"  - wave_polylines.geojson")
-    logger.info(f"  - bank_impact_points.geojson")
     logger.info(f"  - wind_indicator.geojson")
 
 

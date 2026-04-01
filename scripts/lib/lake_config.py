@@ -1,8 +1,8 @@
 """
 Lake configuration loading and management.
 
-Primary source: PostGIS database (hydrology.lakes)
-Fallback: local data/lakes/{lake_id}/config.json files
+Primary source: local data/lakes/{lake_id}/config.json files
+Fallback: PostGIS database (hydrology.lakes)
 """
 
 import json
@@ -94,7 +94,7 @@ def load_lake_config_from_db(lake_name: str) -> LakeConfig:
 
 def load_lake_config(lake_id: str, data_root: Optional[Path] = None) -> LakeConfig:
     """
-    Load lake configuration. Tries the database first, falls back to local JSON.
+    Load lake configuration. Uses local JSON if available, falls back to database.
 
     Args:
         lake_id: Lake identifier (e.g. 'champlain', 'Lake Champlain')
@@ -103,36 +103,92 @@ def load_lake_config(lake_id: str, data_root: Optional[Path] = None) -> LakeConf
     Returns:
         LakeConfig instance
     """
-    # Try database first
-    try:
-        return load_lake_config_from_db(lake_id)
-    except Exception as e:
-        logger.debug(f"DB lookup failed for '{lake_id}': {e}")
-
-    # Fall back to local JSON config
     if data_root is None:
         data_root = _find_data_root()
 
-    config_path = data_root / "lakes" / lake_id / "config.json"
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Lake '{lake_id}' not found in database or at {config_path}"
+    # Try local JSON config first (avoids DB query when data already exists)
+    # Check multiple slug variants: full slug, raw id, and without "lake-" prefix
+    slug = _slugify(lake_id)
+    candidates = [slug, lake_id]
+    # "Lake Champlain" slugifies to "lake-champlain" but dir might be "champlain"
+    if slug.startswith('lake-'):
+        candidates.append(slug[5:])
+
+    config_path = None
+    for candidate in candidates:
+        path = data_root / "lakes" / candidate / "config.json"
+        if path.exists():
+            config_path = path
+            break
+
+    if config_path is not None:
+        logger.debug(f"Loading '{lake_id}' from local config: {config_path}")
+        with open(config_path) as f:
+            raw = json.load(f)
+
+        return LakeConfig(
+            lake_id=config_path.parent.name,
+            name=raw["name"],
+            gnis_id=raw.get("gnis_id", ""),
+            bbox=raw["bbox"],
+            center=raw["center"],
+            avg_depth_m=raw.get("avg_depth_m", 10.0),
+            utm_epsg=raw.get("utm_epsg", 0),
+            state=raw.get("state", ""),
+            area_km2=raw.get("area_km2", 0.0),
         )
 
-    with open(config_path) as f:
-        raw = json.load(f)
+    # Fall back to database
+    try:
+        return load_lake_config_from_db(lake_id)
+    except Exception as e:
+        raise FileNotFoundError(
+            f"Lake '{lake_id}' not found locally (tried {candidates}) or in database: {e}"
+        )
 
-    return LakeConfig(
-        lake_id=lake_id,
-        name=raw["name"],
-        gnis_id=raw.get("gnis_id", ""),
-        bbox=raw["bbox"],
-        center=raw["center"],
-        avg_depth_m=raw.get("avg_depth_m", 10.0),
-        utm_epsg=raw.get("utm_epsg", 0),
-        state=raw.get("state", ""),
-        area_km2=raw.get("area_km2", 0.0),
-    )
+
+def list_lakes_local(min_area_km2: float = 5.0,
+                     states: list = None,
+                     data_root: Optional[Path] = None) -> list:
+    """
+    List lakes from local config files, filtering by area and state.
+
+    Returns:
+        List of LakeConfig instances matching the filters
+    """
+    if data_root is None:
+        data_root = _find_data_root()
+
+    lakes_dir = data_root / "lakes"
+    if not lakes_dir.exists():
+        return []
+
+    configs = []
+    for d in sorted(lakes_dir.iterdir()):
+        config_path = d / "config.json"
+        if not d.is_dir() or not config_path.exists():
+            continue
+        with open(config_path) as f:
+            raw = json.load(f)
+        area = raw.get("area_km2", 0.0)
+        state = raw.get("state", "").upper()
+        if area < min_area_km2:
+            continue
+        if states and state not in states:
+            continue
+        configs.append(LakeConfig(
+            lake_id=d.name,
+            name=raw["name"],
+            gnis_id=raw.get("gnis_id", ""),
+            bbox=raw["bbox"],
+            center=raw["center"],
+            avg_depth_m=raw.get("avg_depth_m", 10.0),
+            utm_epsg=raw.get("utm_epsg", 0),
+            state=state,
+            area_km2=area,
+        ))
+
+    return configs
 
 
 def list_lakes_from_db(min_area_km2: float = 5.0,
